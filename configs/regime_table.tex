@@ -1,0 +1,93 @@
+% GR00T N1.7-3B fine-tuning regime -- AI Worker bimanual screwing
+% requires: booktabs, siunitx (optional)
+\begin{table}[t]
+\centering
+\small
+\setlength{\tabcolsep}{5pt}
+\renewcommand{\arraystretch}{1.08}
+\begin{tabular}{@{}llr@{}}
+\toprule
+\multicolumn{3}{@{}l}{\textbf{Task} — bimanual bolt insertion and screwing, 5 language subtasks} \\
+\midrule
+\multicolumn{3}{@{}l}{\textit{Data}} \\
+\quad Train / held-out      & episodes            & 31 / 4 \\
+\quad                       & frames              & 55{,}701 / 6{,}962 \\
+\quad                       & duration @ \SI{30}{Hz} & \SI{30.9}{min} / \SI{3.9}{min} \\
+\quad Cameras (3)           & head                & $672\times376$ \\
+\quad                       & left / right wrist  & $240\times424$ \\
+\quad Action / state        & controlled DoF      & 16 \\
+\quad Label                 & $a[t]=s[t{+}5]$     & \SI{167}{ms} tracking lag \\
+\quad Supervised horizon    & steps (\SI{0.53}{s}) & 16 \\
+\quad Language              & arm-annotated subtasks & 5 \\
+\midrule
+\multicolumn{3}{@{}l}{\textit{Model} — GR00T N1.7-3B, Cosmos-Reason2-2B @ \texttt{select\_layer}\,16} \\
+\quad Total parameters      &                     & 3{,}144{,}016{,}000 \\
+\quad Retained LLM depth    & \texttt{select\_layer} of 28 & 16 \\
+\quad Trainable             & $\approx$51.5\%     & 1{,}620{,}515{,}968 \\
+\midrule
+\multicolumn{3}{@{}l}{\textit{Frozen} \ding{55} \ \ \textit{Trained} \ding{51}} \\
+\quad Vision encoder        & \texttt{tune\_visual}          & \ding{55} \\
+\quad LLM, all layers       & \texttt{tune\_llm}             & \ding{55} \\
+\quad LLM, top-$N$ of 16    & \texttt{tune\_top\_llm\_layers} & 0 \ \ding{55} \\
+\quad Projector             & \texttt{tune\_projector}       & \ding{51} \\
+\quad Diffusion (DiT) head  & \texttt{tune\_diffusion\_model} & \ding{51} \\
+\quad Vision--language LN   & \texttt{tune\_vlln}            & \ding{51} \\
+\midrule
+\multicolumn{3}{@{}l}{\textit{Optimisation}} \\
+\quad Steps                 & $\geq$ 91.9 epochs  & 80{,}000$+$ \\
+\quad Global batch          & $32\times2$ GPU     & 64 \\
+\quad Optimiser             & \texttt{adamw\_torch} & --- \\
+\quad Learning rate         & cosine, decay to 0  & \num{1e-4} \\
+\quad Warmup                & ratio 0.05          & 4{,}000 \\
+\quad Weight decay          &                     & \num{1e-5} \\
+\quad Precision             & bf16 (fp32 master)  & --- \\
+\midrule
+\multicolumn{3}{@{}l}{\textit{Augmentation}} \\
+\quad Per-camera crop$^\dagger$ & head: letterbox (full FoV) & 44\% black \\
+\quad                       & wrists: bottom square      & 0\% black \\
+\quad Random crop           & \texttt{crop\_fraction}$^\dagger$ (\textbf{off}) & 1.0 \\
+\quad Colour jitter$^\dagger$ & \{b,c,s,h\}       & \{0.3,\,0.4,\,0.5,\,0.08\} \\
+\quad State dropout         & \texttt{state\_dropout\_prob} & 0.2 \\
+\quad Rotation              & \texttt{random\_rotation\_angle} & 0 \\
+\midrule
+\multicolumn{3}{@{}l}{\textit{Normalisation}} \\
+\quad Percentile clipping   & \texttt{use\_percentiles}$^\dagger$ & \ding{55} \\
+\quad                       & (q01/q99 clipped 0.5--35\% of range) & \\
+\bottomrule
+\end{tabular}
+
+\vspace{2pt}
+{\footnotesize
+\begin{tabular}{@{}rll@{}}
+\multicolumn{3}{@{}l}{\textit{Subtask instructions} (byte-identical in training and deployment)} \\
+0 & \texttt{Grab the orange bolt with the left arm} & L \\
+1 & \texttt{Place the orange bolt into the hole with the left arm} & L \\
+2 & \texttt{Grab the driver with the right arm} & R \\
+3 & \texttt{Screw in the bolt by pushing down with the right arm} & R \\
+4 & \texttt{Return both arms to home} & L+R \\
+\end{tabular}}
+\caption{Fine-tuning regime. Partial adaptation: the vision encoder and the full
+language backbone stay frozen; only the projector, the diffusion action head and the
+vision--language layer norms receive gradient. Actions are absolute joint targets
+recovered from the follower arm's own future state at a measured \SI{167}{ms} lag,
+which removes the leader/follower desynchronisation present in the raw teleoperation
+logs. The backbone is truncated at layer 16 of 28 and left fully frozen: unfreezing the
+top four layers would add $\approx$\num{201}\,M trainable parameters
+($\approx$\num{3600} per training frame, against $\approx$\num{1100} in our larger
+comparison run), which we judge unaffordable at \num{31} demonstrations. Random
+cropping is disabled: the wrist cameras place the workspace in the lower band of the
+frame, where a \num{0.95} crop can remove up to \num{45}\% of the visible workspace at
+the moment of grasp. Letterbox padding is retained, so aspect ratio is preserved. The three views are cropped per camera rather than by one rule: the head is a
+static context view whose arms sweep the full width (a centred square crop deletes \num{50}\%
+of its motion energy, \num{59}\% during the driver grasp), so it keeps full field of view and
+pays \num{44}\% padding; the wrist views are moving close-ups whose upper half is ceiling
+(\num{88}\% of the frame at the grasp instant), so they are cropped bottom-anchored to square
+at \num{0}\% padding. Mean black share \num{44}\%$\rightarrow$\num{14.7}\%, workspace content
+\num{18.6}\%$\rightarrow$\num{40.3}\%. Each crop must be square but the squares need not match;
+the trailing resize normalises every view to $256^2$.
+Instructions name the working arm explicitly; measured joint travel confirms the
+assignment (subtask 0: \num{85}\% left, 2: \num{90}\% right, 4: \num{48}/\num{52}).
+$^\dagger$Not exposed by the fine-tuning CLI: these are read from the model config, so
+they are set by patching the base checkpoint's \texttt{config.json} before launch.}
+\label{tab:regime}
+\end{table}
