@@ -210,9 +210,16 @@ def main():
       thw = grab["thw"]
       tiles, stats = [], []
       off = 0
-      lo, hi = (float(np.percentile(heat, 2)), float(np.percentile(heat, 98)))
-      #shared across the three cameras so panels are comparable, but percentile-clipped: a plain
-      #min/max lets one outlier token crush the other two panels to flat blue.
+      #SCALE ANCHORED AT UNIFORM, not at the data's own percentiles.
+      #
+      #The previous version stretched the 2nd..98th percentile of `heat` across the full colour
+      #map. On attention whose measured entropy is 0.9918 -- i.e. essentially uniform -- that takes
+      #~2% token-to-token noise and paints it red-to-blue, manufacturing "hotspots" that are not
+      #there. Anchoring at the uniform share instead means flat attention RENDERS flat, and only a
+      #token genuinely pulling more than its share shows up warm.
+      #  1.0 = this token gets exactly its fair share (heat.sum()/n_tok)
+      #  2.0 = twice its share.  Everything is clipped to [0, 2], so mid-colour == uniform.
+      uniform = float(heat.sum()) / max(n_tok, 1)
       for j, cam in enumerate(cams):
         t, gh, gw = [int(x) for x in thw[j]]
         hh, ww = gh // 2, gw // 2
@@ -230,8 +237,12 @@ def main():
         pad_frac = float(seg.reshape(hh, ww)[~cm].sum() / max(seg.sum(), 1e-9)) if (~cm).any() else 0.0
         stats.append((cam, hh, ww, pad_frac, float((~cm).mean()), float(seg.sum() / max(heat.sum(), 1e-9))))
 
-        n = np.clip((hm - lo) / (hi - lo + 1e-9), 0, 1)        #shared, percentile-clipped
-        up = cv2.resize(n, (a.side, a.side), interpolation=cv2.INTER_CUBIC)
+        n = np.clip(hm / (uniform + 1e-12) / 2.0, 0, 1)        #0.5 == uniform share
+        #NEAREST, not CUBIC. The map is 8x8: one token covers 1/64 of the frame. Cubic
+        #interpolation turns that coarse grid into smooth circular blobs that read as spatial
+        #structure the model never expressed, and it overshoots outside [0,1] so the colour map
+        #saturates at both ends. Blocky is honest -- the reader sees the true token resolution.
+        up = cv2.resize(n, (a.side, a.side), interpolation=cv2.INTER_NEAREST)
         hc = cv2.applyColorMap((up * 255).astype(np.uint8), cv2.COLORMAP_JET)
         tiles.append(cv2.addWeighted(cv2.cvtColor(shown, cv2.COLOR_RGB2BGR), 0.55, hc, 0.45, 0))
 
@@ -245,7 +256,7 @@ def main():
       TS = a.tile or a.side
       pad = 8
       W = sum(t.shape[1] for t in tiles) + pad * (len(tiles) + 1)
-      panel = np.full((TS + 116, W, 3), 24, np.uint8)
+      panel = np.full((TS + 136, W, 3), 24, np.uint8)
       x = pad
       for t_, (cam, hh, ww, pf, pa, share) in zip(tiles, stats):
         panel[70:70 + TS, x:x + t_.shape[1]] = t_
@@ -258,6 +269,17 @@ def main():
       ph = int(sub[t_frame]) if t_frame < len(sub) else 0
       cv2.putText(panel, f"ep{a.episode}  f{t_frame}  subtask {ph}/4  |  {used} image cross-attn blocks",
                   (pad, TS + 70), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (150, 150, 155), 1, cv2.LINE_AA)
+      #the selectivity number belongs ON the figure. Without it a reader takes the colours at face
+      #value; at entropy ~0.99 the honest reading is "this policy attends almost uniformly".
+      ent_, top8_, ntok_, _pb = grab["stats_info"]
+      verdict = ("NEAR-UNIFORM: colours are noise, not hotspots" if ent_ > 0.98 else
+                 "weakly selective" if ent_ > 0.90 else "selective")
+      cv2.putText(panel, f"entropy {ent_:.4f} (1.000=uniform)   top-8/{ntok_} = {top8_:.1%} "
+                         f"(uniform {8/ntok_:.1%})   {verdict}",
+                  (pad, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.40,
+                  (120, 200, 255) if ent_ > 0.98 else (180, 180, 185), 1, cv2.LINE_AA)
+      cv2.putText(panel, "colour: mid = token's fair share, warm = above it", (pad, TS + 126),
+                  cv2.FONT_HERSHEY_SIMPLEX, 0.38, (150, 150, 155), 1, cv2.LINE_AA)
 
       #the instruction is drawn only on the second copy, so one inference pass yields both a
       #with-language and a without-language video

@@ -9,7 +9,7 @@ datasets and launch_finetune now accepts "path@ratio". So we split at export tim
 
     dagger_human   task_is_policy == 0                        -> mix 0.30
     dagger_auto    task_is_policy == 1, outside the window    -> mix 0.10
-    (dropped)      the PRE_WINDOW seconds before each takeover -> excluded entirely
+    (dropped)      task_is_policy == -1, plus the PRE_WINDOW seconds before each takeover
 
 Dropping beats zero-weighting: a zero-weight frame still costs dataloader time and shard space.
 
@@ -25,7 +25,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-POLICY_COL = "task_is_policy"     # 1.0 = policy driving, 0.0 = human on the leaders
+POLICY_COL = "task_is_policy"   # 1.0 = policy driving, 0.0 = human on the leaders, -1.0 = handover pause (excluded)
 
 
 def main():
@@ -56,15 +56,20 @@ def main():
         p = info["data_path"].format(episode_chunk=ei // info["chunks_size"], episode_index=ei)
         df = pd.read_parquet(src / p).sort_values("frame_index")
         pol = np.asarray([float(np.ravel(v)[0]) for v in df[POLICY_COL]], dtype=float)
-        human = pol < 0.5
+        # THREE states, not two. -1 is handover dead time: the arm is stationary while the
+        # operator takes or returns the leader, and it belongs to neither side. A plain
+        # `pol < 0.5` sweeps it in as human -- that read 79 takeovers where there were 39,
+        # and would have trained 4.7k stationary frames as if they were corrections.
+        excluded = pol < -0.5
+        human = (pol >= -0.5) & (pol < 0.5)
         # a takeover is an auto->human transition; drop the W frames before each
-        drop = np.zeros(len(pol), bool)
+        drop = excluded.copy()
         starts = np.where(human[1:] & ~human[:-1])[0] + 1
         tally["takeovers"] += len(starts)
         for s in starts:
             drop[max(0, s - W):s] = True
         h_idx = np.where(human & ~drop)[0]
-        a_idx = np.where(~human & ~drop)[0]
+        a_idx = np.where((pol >= 0.5) & ~drop)[0]
         keep["human"][ei] = h_idx
         keep["auto"][ei] = a_idx
         tally["human"] += len(h_idx); tally["auto"] += len(a_idx)
