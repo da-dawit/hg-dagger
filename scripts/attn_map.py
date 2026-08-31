@@ -92,6 +92,9 @@ def main():
                     help="--video: which subtask to sweep; -1 = the WHOLE episode")
     ap.add_argument("--stride", type=int, default=4, help="--video: sample every Nth frame")
     ap.add_argument("--fps", type=int, default=10, help="--video: playback fps")
+    ap.add_argument("--dump", default=None,
+                    help="write the per-camera token heat, the prepared images and the "
+                         "content masks to this .npz, for rendering the figure elsewhere")
     ap.add_argument("--out-notext", default=None,
                     help="--video: also write this file WITHOUT the instruction overlay "
                          "(same inference pass, so it is free)")
@@ -115,7 +118,13 @@ def main():
                      sorted(glob.glob(str(Path(a.v30) / "data/**/*.parquet"), recursive=True))])
     sub = v30[v30.episode_index == a.episode].sort_values("frame_index").subtask_index.to_numpy()
     if a.frame is None:
-        idx = np.where(sub == 2)[0]                      # "Grab the driver"
+        #--subtask picked the frame for --video only; the still was pinned to
+        #subtask 2 regardless of what was asked for
+        want = a.subtask if a.subtask >= 0 else 2
+        idx = np.where(sub == want)[0]
+        if not len(idx):
+            raise SystemExit(f"episode {a.episode} has no subtask {want}; "
+                             f"present: {sorted(set(sub.tolist()))}")
         a.frame = int(idx.min() + 0.75 * (idx.max() - idx.min()))
     phase = int(sub[a.frame])
     print(f"episode {a.episode} frame {a.frame} -- subtask {phase} '{SUB[phase]}'")
@@ -220,6 +229,7 @@ def main():
       #  1.0 = this token gets exactly its fair share (heat.sum()/n_tok)
       #  2.0 = twice its share.  Everything is clipped to [0, 2], so mid-colour == uniform.
       uniform = float(heat.sum()) / max(n_tok, 1)
+      dump = {}
       for j, cam in enumerate(cams):
         t, gh, gw = [int(x) for x in thw[j]]
         hh, ww = gh // 2, gw // 2
@@ -245,6 +255,24 @@ def main():
         up = cv2.resize(n, (a.side, a.side), interpolation=cv2.INTER_NEAREST)
         hc = cv2.applyColorMap((up * 255).astype(np.uint8), cv2.COLORMAP_JET)
         tiles.append(cv2.addWeighted(cv2.cvtColor(shown, cv2.COLOR_RGB2BGR), 0.55, hc, 0.45, 0))
+        if a.dump:
+            #raw token values, not the clipped render, so the scale can be chosen later
+            dump[f"heat_{cam}"] = hm
+            dump[f"img_{cam}"] = shown
+            dump[f"content_{cam}"] = content
+
+      if a.dump:
+          #carry the language prompt with the values, so a figure comparing two
+          #runs can assert they were given the same instruction rather than
+          #assume it
+          dump["instruction"] = np.array(st.text)
+          dump["frame"] = np.array(t_frame)
+          dump["uniform"] = np.array(uniform)
+          dump["cams"] = np.array(cams)
+          dump["entropy"] = np.array(ent)
+          dump["top8"] = np.array(top8)
+          np.savez_compressed(a.dump, **dump)
+          print(f"  dumped token values to {a.dump}")
 
       if a.only_cam:
           keep = [i for i, st_ in enumerate(stats) if a.only_cam in st_[0]]

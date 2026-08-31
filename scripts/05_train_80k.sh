@@ -123,8 +123,8 @@ if [ "${SMOKE:-1}" = "1" ]; then
       --output-dir /tmp/groot_smoke \
       --max-steps 20 --save-steps 1000 --global-batch-size 64 \
       --dataloader-num-workers ${WORKERS:-16} \
-      --tune-llm false --tune-visual false \
-      --tune-projector true --tune-diffusion-model true \
+      --no-tune-llm --no-tune-visual \
+      --tune-projector --tune-diffusion-model \
       --state-dropout-prob 0.2 )
   echo "    smoke OK -- read the tqdm step rate above, multiply by $STEPS for the real ETA"
 fi
@@ -145,10 +145,10 @@ $LAUNCH gr00t/experiment/launch_finetune.py \
   --learning-rate 1e-4 \
   --weight-decay 1e-5 \
   --warmup-ratio 0.05 \
-  --tune-llm false \
-  --tune-visual false \
-  --tune-projector true \
-  --tune-diffusion-model true \
+  --no-tune-llm \
+  --no-tune-visual \
+  --tune-projector \
+  --tune-diffusion-model \
   --state-dropout-prob 0.2 \
   --save-steps 5000 \
   --save-total-limit 20 \

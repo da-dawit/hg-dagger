@@ -41,6 +41,10 @@ def main() -> int:
     ap.add_argument("--subtask", type=int, default=-1, help="-1 = whole episode")
     ap.add_argument("--out", default="rollout3d.png")
     ap.add_argument("--spin", action="store_true", help="also write a rotating mp4")
+    ap.add_argument("--dump", default=None,
+                    help="write the human path, the policy path and the per-point "
+                         "subtask index to this .npz, so the figure can be redrawn "
+                         "without running inference again")
     a = ap.parse_args()
 
     sys.path.insert(0, G)
@@ -121,7 +125,11 @@ def main() -> int:
               f"{b[0]:>+8.1f}{b[1]:>+8.1f}{b[2]:>+8.1f}")
     print("  (+x forward, +y left, +z up; negative dx at a grasp = stops SHORT)")
 
-    fig = plt.figure(figsize=(15, 6.5))
+    if a.dump:
+        np.savez_compressed(a.dump, human=H, policy=P, subtask=S, err=err)
+        print(f"  dumped paths to {a.dump}")
+
+    fig = plt.figure(figsize=(15.4, 6.2))
     for n, (el, az, ttl) in enumerate([(22, -60, "perspective"), (90, -90, "top-down (x-y)"),
                                        (0, -90, "side (x-z)")]):
         ax = fig.add_subplot(1, 3, n + 1, projection="3d")
@@ -135,7 +143,23 @@ def main() -> int:
         ax.scatter(*H[-1], c="k", s=55, marker="X", zorder=5)
         ax.view_init(elev=el, azim=az)
         ax.set_title(ttl, fontsize=10)
-        ax.set_xlabel("x (mm)"); ax.set_ylabel("y (mm)"); ax.set_zlabel("z (mm)")
+        #labelpad: matplotlib places an axis label relative to the axis line,
+        #not to the tick text beside it, so on the edge-on views the label lands
+        #on top of its own numbers.
+        ax.set_xlabel("x (mm)", labelpad=10)
+        ax.set_ylabel("y (mm)", labelpad=10 if n != 1 else 14)
+        ax.set_zlabel("z (mm)", labelpad=10 if n != 2 else 18)
+        #Panels 2 and 3 are edge-on views, so one axis collapses to a line and
+        #its tick labels pile up on top of each other in the corner. Drop the
+        #axis that is degenerate in each view; the other two carry the plot.
+        if n == 1:                                  #top-down: z is edge-on
+            ax.set_zticks([]); ax.set_zlabel("")
+        elif n == 2:                                #side: y is edge-on
+            ax.set_yticks([]); ax.set_ylabel("")
+        #zoom < 1 shrinks the drawn box inside the axes rectangle. Without it
+        #the outermost z tick label is cut in half by the axes edge, which
+        #widening the figure does not fix because tight_layout repacks it.
+        ax.set_box_aspect(None, zoom=0.84)
         allpts = np.vstack([H, P])
         c, r = allpts.mean(0), (allpts.max(0) - allpts.min(0)).max() / 2 + 10
         for setter, ci in ((ax.set_xlim, 0), (ax.set_ylim, 1), (ax.set_zlim, 2)):

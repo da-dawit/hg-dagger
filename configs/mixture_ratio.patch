@@ -1,0 +1,52 @@
+diff --git a/gr00t/experiment/launch_finetune.py b/gr00t/experiment/launch_finetune.py
+index e4ea372..fbea4f6 100644
+--- a/gr00t/experiment/launch_finetune.py
++++ b/gr00t/experiment/launch_finetune.py
+@@ -56,19 +56,39 @@ if __name__ == "__main__":
+     if ft_config.modality_config_path is not None:
+         load_modality_config(ft_config.modality_config_path)
+ 
+-    dataset_paths = [path for path in ft_config.dataset_path.split(os.pathsep) if path]
++    #--dataset-path accepts several paths separated by os.pathsep, optionally each with an
++    #explicit mixing ratio as "path@ratio":
++    #
++    #    --dataset-path "orig@0.6:dagger_human@0.3:dagger_auto@0.1"
++    #
++    #Without a ratio all paths land in ONE DatasetSpec, and factory.py:77 computes
++    #weight = relative_length * mix_ratio -- i.e. sampling proportional to DATASET SIZE. That is
++    #wrong for HG-DAgger, where a small set of human corrections must be over-sampled relative to
++    #the bulk demonstrations. Giving each path its own spec makes relative_length 1.0 within the
++    #spec, so weight == mix_ratio exactly.
++    _specs, _plain = [], []
++    for _entry in ft_config.dataset_path.split(os.pathsep):
++        if not _entry:
++            continue
++        if "@" in _entry:
++            _p, _r = _entry.rsplit("@", 1)
++            _specs.append({"dataset_paths": [_p], "mix_ratio": float(_r),
++                           "embodiment_tag": embodiment_tag})
++        else:
++            _plain.append(_entry)
++    if _plain:
++        _specs.append({"dataset_paths": _plain, "mix_ratio": 1.0,
++                       "embodiment_tag": embodiment_tag})
++    dataset_paths = [q for sp in _specs for q in sp["dataset_paths"]]
++    if len(_specs) > 1 or any("@" in e for e in ft_config.dataset_path.split(os.pathsep)):
++        print("[mixture] " + "  ".join(
++            f"{sp['dataset_paths']} ratio={sp['mix_ratio']}" for sp in _specs), flush=True)
+ 
+     config = get_default_config().load_dict(
+         {
+             "data": {
+                 "download_cache": False,
+-                "datasets": [
+-                    {
+-                        "dataset_paths": dataset_paths,
+-                        "mix_ratio": 1.0,
+-                        "embodiment_tag": embodiment_tag,
+-                    }
+-                ],
++                "datasets": _specs,
+             }
+         }
+     )
